@@ -19,6 +19,8 @@ portcullis-core = { path = "crates/portcullis-core", version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+tokio = { version = "1", default-features = false }
+memchr = "2"
 
 # Lints applied to every crate in the workspace. Individual crates opt in with
 # `[lints] workspace = true`, which keeps the policy in exactly one place.

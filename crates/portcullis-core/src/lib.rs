@@ -21,6 +21,7 @@
 
 pub mod jsonrpc;
 pub mod mcp;
+pub mod transport;
 
 pub use jsonrpc::{
     ErrorObject, Message, Notification, Request, RequestId, Response, ResponsePayload, error_code,
@@ -29,6 +30,7 @@ pub use mcp::{
     CallToolParams, CallToolResult, Content, InitializeParams, InitializeResult, ListToolsResult,
     Tool, ToolAnnotations, method,
 };
+pub use transport::{MessageReader, MessageWriter, TransportError};
 
 /// The MCP revision portcullis is built against.
 ///
