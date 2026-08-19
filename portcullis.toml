@@ -1,0 +1,44 @@
+# portcullis gateway configuration
+#
+# Each [[server]] is an MCP server portcullis starts and fronts. The `name` is
+# what namespaces its tools (`fs` gives `fs__read_file`) and what policy rules
+# match with their `servers` key, so renaming a server here changes which rules
+# apply to it.
+#
+# The commands below are the reference servers from the MCP project. Replace
+# them with whatever you actually run; nothing here is required.
+
+# Namespace separator. The default avoids `.`, which several MCP clients reject
+# in tool names. Change it only if your client is stricter still.
+separator = "__"
+
+[[server]]
+name = "fs"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+
+[[server]]
+name = "gh"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+# Secrets belong in the environment portcullis inherits, not in this file,
+# which is meant to be committed.
+# env = { GITHUB_PERSONAL_ACCESS_TOKEN = "..." }
+
+# How tool results are scanned on the way back to the client.
+[inspection]
+# off | annotate | block. annotate keeps the content and fences it as untrusted
+# data; block replaces it. annotate is the default because the injection
+# detectors are heuristics and destroying a result on a heuristic is a poor
+# trade in most setups.
+injection = "annotate"
+# Severity at or above which `block` applies. Below it, block annotates instead.
+block_at = "high"
+# Redact credentials found in tool results before they reach the model.
+redact_secrets = true
+
+# Uncomment to record every decision. Off by default: the log is useful and it
+# is also a file that accumulates what your agent touched.
+# [audit]
+# path = "portcullis.audit.jsonl"
+# log_arguments = false
