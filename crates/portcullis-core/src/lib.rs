@@ -19,6 +19,12 @@
 
 #![doc(html_root_url = "https://docs.rs/portcullis-core/0.1.0")]
 
+pub mod jsonrpc;
+
+pub use jsonrpc::{
+    ErrorObject, Message, Notification, Request, RequestId, Response, ResponsePayload, error_code,
+};
+
 /// The MCP revision portcullis is built against.
 ///
 /// The gateway is not pinned to this value at runtime. It negotiates whatever
