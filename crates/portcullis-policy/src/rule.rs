@@ -94,6 +94,14 @@ impl Predicate {
         }
     }
 
+    /// Whether this predicate only tests presence.
+    ///
+    /// Validation uses this to tell a negated value check apart from a
+    /// presence check, since the two compose differently over absent arguments.
+    pub fn is_exists(&self) -> bool {
+        matches!(self, Self::Exists)
+    }
+
     /// A short label naming the predicate kind, for explanations and audit.
     pub fn kind(&self) -> &'static str {
         match self {

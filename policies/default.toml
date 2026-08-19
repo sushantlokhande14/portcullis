@@ -1,0 +1,137 @@
+# portcullis default policy
+#
+# A starting point, not a finished policy. It is written for the shape of the
+# MCP servers most people run first (a filesystem server, a GitHub server, a
+# shell server) and it assumes the tool namespace prefixes in portcullis.toml
+# match the server names used here.
+#
+# Rules are evaluated top to bottom and the first one that applies decides, so
+# order is meaningful: a broad allow near the top will shadow every narrower
+# deny below it. Run `portcullis validate` after editing; it reports rules that
+# can never be reached.
+#
+# The default is deny. Keep it that way. A call that omits the argument a deny
+# rule inspects does not match that rule, so under a default of allow such a
+# call would be forwarded. Default-deny is what makes the deny rules below
+# meaningful rather than advisory.
+
+version = 1
+default = "deny"
+
+# ---------------------------------------------------------------------------
+# Credential and secret material
+#
+# These come first so nothing below can accidentally permit them. Every rule
+# here is a deny, so putting them at the top costs nothing and removes an
+# entire class of ordering mistake.
+# ---------------------------------------------------------------------------
+
+[[rule]]
+id = "deny-credential-paths"
+description = "Never read or write the directories that hold long-lived credentials"
+tools = ["fs.*"]
+action = "deny"
+when = [
+  { arg = "path", matches = "(^|/)\\.(ssh|aws|gnupg|kube|docker|config/gcloud)(/|$)" },
+]
+
+[[rule]]
+id = "deny-dotenv-files"
+description = "Environment files are the single most common place a secret leaks from"
+tools = ["fs.*"]
+action = "deny"
+when = [
+  { arg = "path", matches = "(^|/)\\.env(\\.|$)" },
+]
+
+[[rule]]
+id = "deny-path-traversal"
+description = "Reject relative escapes rather than trying to normalise them here"
+tools = ["fs.*"]
+action = "deny"
+when = [
+  { arg = "path", contains = ".." },
+]
+
+# ---------------------------------------------------------------------------
+# Filesystem
+# ---------------------------------------------------------------------------
+
+[[rule]]
+id = "allow-filesystem-reads"
+description = "Reads are permitted anywhere the deny rules above have not excluded"
+tools = ["fs.read_*", "fs.list_*", "fs.search_*", "fs.get_*"]
+action = "allow"
+
+[[rule]]
+id = "deny-recursive-delete"
+description = "A recursive delete is the one filesystem call with no safe misfire"
+tools = ["fs.delete*", "fs.remove*", "fs.rm*"]
+action = "deny"
+when = [
+  { arg = "recursive", equals = true },
+]
+
+[[rule]]
+id = "allow-workspace-writes"
+description = "Writes are confined to the working tree"
+tools = ["fs.write_*", "fs.edit_*", "fs.create_*", "fs.move_*"]
+action = "allow"
+when = [
+  { arg = "path", exists = true },
+  { arg = "path", glob = "/workspace/*" },
+]
+
+# ---------------------------------------------------------------------------
+# Version control
+#
+# Reads are broadly fine. Anything that publishes, merges, or changes who can
+# do what is denied, because those are the actions a prompt injection in an
+# issue body would try to reach.
+# ---------------------------------------------------------------------------
+
+[[rule]]
+id = "allow-github-reads"
+description = "Issue, PR, and repository reads"
+tools = ["gh.list_*", "gh.get_*", "gh.search_*", "gh.read_*"]
+action = "allow"
+
+[[rule]]
+id = "deny-github-permission-changes"
+description = "Collaborators, deploy keys, secrets, and webhooks are never agent business"
+tools = [
+  "gh.add_collaborator",
+  "gh.update_*_permission*",
+  "gh.create_deploy_key",
+  "gh.set_secret",
+  "gh.create_webhook",
+  "gh.update_branch_protection",
+]
+action = "deny"
+
+[[rule]]
+id = "deny-github-merge-and-release"
+description = "Publishing is a human decision"
+tools = ["gh.merge_*", "gh.create_release", "gh.publish_*", "gh.delete_*"]
+action = "deny"
+
+[[rule]]
+id = "allow-github-drafting"
+description = "Opening issues and PRs is reversible and useful"
+tools = ["gh.create_issue", "gh.create_pull_request", "gh.comment_*", "gh.update_issue"]
+action = "allow"
+
+# ---------------------------------------------------------------------------
+# Shell
+#
+# There is no allow rule for shell tools. Adding one is the single highest
+# risk edit you can make to this file: a shell tool is every other tool at
+# once, and no argument pattern reliably tells a safe command from an unsafe
+# one. If you need it, scope it to one named binary with `equals`, not a glob.
+# ---------------------------------------------------------------------------
+
+[[rule]]
+id = "deny-shell"
+description = "Arbitrary command execution defeats every other rule in this file"
+tools = ["shell.*", "bash.*", "exec.*", "process.*", "terminal.*"]
+action = "deny"
