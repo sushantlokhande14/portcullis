@@ -1,0 +1,11 @@
+//! The portcullis gateway itself.
+//!
+//! This crate wires the protocol types, the policy engine, and the scanners
+//! into a proxy that speaks MCP on both sides: it is a server to the client and
+//! a client to each upstream server.
+
+#![doc(html_root_url = "https://docs.rs/portcullis-proxy/0.1.0")]
+
+pub mod upstream;
+
+pub use upstream::{Upstream, UpstreamConfig, UpstreamError};

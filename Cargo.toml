@@ -17,6 +17,7 @@ categories = ["command-line-utilities", "network-programming"]
 portcullis-core = { path = "crates/portcullis-core", version = "0.1.0" }
 portcullis-policy = { path = "crates/portcullis-policy", version = "0.1.0" }
 portcullis-scan = { path = "crates/portcullis-scan", version = "0.1.0" }
+portcullis-proxy = { path = "crates/portcullis-proxy", version = "0.1.0" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -26,6 +27,8 @@ memchr = "2"
 regex = "1"
 sha2 = "0.10"
 toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Lints applied to every crate in the workspace. Individual crates opt in with
 # `[lints] workspace = true`, which keeps the policy in exactly one place.
