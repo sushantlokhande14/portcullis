@@ -27,9 +27,13 @@
 #![doc(html_root_url = "https://docs.rs/portcullis-policy/0.1.0")]
 
 pub mod argpath;
+pub mod engine;
 pub mod glob;
 pub mod rule;
 
 pub use argpath::ArgPath;
+pub use engine::{
+    CallContext, Decision, DecisionSource, Explanation, Policy, RuleTrace, TraceOutcome,
+};
 pub use glob::Pattern;
 pub use rule::{Action, Condition, Predicate, Rule, RuleError};
