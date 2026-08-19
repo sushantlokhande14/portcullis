@@ -24,6 +24,7 @@
 //! model's context that no policy ever saw. `docs/architecture.md` tracks that
 //! gap, and it is one of the better places to contribute.
 
+use crate::inspect::{Inspection, InspectionConfig, inspect};
 use crate::registry::ToolRegistry;
 use crate::upstream::{Upstream, UpstreamConfig, UpstreamError};
 use portcullis_core::mcp::{
@@ -50,6 +51,9 @@ pub struct GatewayConfig {
     /// Namespace separator for published tool names.
     #[serde(default)]
     pub separator: Option<String>,
+    /// How results are scanned on the way back to the client.
+    #[serde(default)]
+    pub inspection: InspectionConfig,
 }
 
 /// Why the gateway could not start.
@@ -79,6 +83,7 @@ pub struct Gateway {
     upstreams: HashMap<String, Arc<Upstream>>,
     registry: ToolRegistry,
     policy: Policy,
+    inspection: InspectionConfig,
     server_info: Implementation,
 }
 
@@ -136,6 +141,7 @@ impl Gateway {
             upstreams,
             registry,
             policy,
+            inspection: config.inspection.clone(),
             server_info: Implementation::new("portcullis", env!("CARGO_PKG_VERSION")),
         })
     }
@@ -320,7 +326,20 @@ impl Gateway {
             )
             .await
         {
-            Ok(value) => Response::success(request.id.clone(), value),
+            Ok(value) => {
+                let (value, report) = self.inspect_result(&params.name, value);
+                if !report.is_clean() {
+                    tracing::info!(
+                        tool = %params.name,
+                        injection = report.injection.len(),
+                        secrets = report.secrets.len(),
+                        unicode = report.unicode.len(),
+                        blocked = report.blocked,
+                        "scanners found something in a tool result"
+                    );
+                }
+                Response::success(request.id.clone(), value)
+            }
             Err(error) => {
                 tracing::warn!(tool = %params.name, %error, "upstream call failed");
                 // An upstream failure is reported to the model as a tool error
@@ -333,6 +352,37 @@ impl Gateway {
                     )))
                     .expect("result serialises"),
                 )
+            }
+        }
+    }
+
+    /// Runs the scanners over an upstream result.
+    ///
+    /// A result that will not deserialise into a `CallToolResult` is returned
+    /// unchanged rather than rejected. Refusing it would break every server
+    /// whose result shape this build does not model, and the passthrough is
+    /// recorded as uninspected rather than reported as clean.
+    fn inspect_result(&self, tool: &str, value: Value) -> (Value, Inspection) {
+        let Ok(mut result) = serde_json::from_value::<CallToolResult>(value.clone()) else {
+            tracing::debug!(
+                tool,
+                "result shape not recognised; forwarded without inspection"
+            );
+            return (value, Inspection::default());
+        };
+
+        let report = inspect(&mut result, &self.inspection);
+        if report.is_clean() {
+            // Nothing changed, so return the original bytes rather than a
+            // re-serialised approximation of them.
+            return (value, report);
+        }
+
+        match serde_json::to_value(&result) {
+            Ok(rewritten) => (rewritten, report),
+            Err(error) => {
+                tracing::error!(tool, %error, "could not re-serialise a scanned result");
+                (value, report)
             }
         }
     }
@@ -382,6 +432,7 @@ mod tests {
             upstreams: HashMap::new(),
             registry,
             policy,
+            inspection: InspectionConfig::default(),
             server_info: Implementation::new("portcullis", "0.1.0"),
         }
     }
@@ -544,6 +595,7 @@ mod tests {
         let config = GatewayConfig {
             servers: Vec::new(),
             separator: None,
+            inspection: InspectionConfig::default(),
         };
         let error = Gateway::start(&config, Policy::default())
             .await
@@ -563,6 +615,7 @@ mod tests {
         let config = GatewayConfig {
             servers: vec![server("fs"), server("fs")],
             separator: None,
+            inspection: InspectionConfig::default(),
         };
 
         let error = Gateway::start(&config, Policy::default())
