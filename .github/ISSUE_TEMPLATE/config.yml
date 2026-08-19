@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/sushantlokhande14/portcullis/security/advisories/new
+    about: Report privately. A phrasing the injection detectors miss is NOT a vulnerability; open a detector gap issue for that.
