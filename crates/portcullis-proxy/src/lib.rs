@@ -8,10 +8,12 @@
 
 pub mod gateway;
 pub mod inspect;
+pub mod ratelimit;
 pub mod registry;
 pub mod upstream;
 
 pub use gateway::{Gateway, GatewayConfig, GatewayError};
 pub use inspect::{InjectionHandling, Inspection, InspectionConfig};
+pub use ratelimit::{RateLimit, RateLimiter};
 pub use registry::{Route, ToolRegistry};
 pub use upstream::{Upstream, UpstreamConfig, UpstreamError};
