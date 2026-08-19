@@ -14,6 +14,8 @@
 
 pub mod injection;
 pub mod secret;
+pub mod unicode;
 
 pub use injection::{InjectionFinding, InjectionKind, Severity};
 pub use secret::{SecretFinding, SecretKind};
+pub use unicode::{Category, UnicodeFinding};
