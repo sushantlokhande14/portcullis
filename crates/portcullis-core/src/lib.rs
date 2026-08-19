@@ -20,9 +20,14 @@
 #![doc(html_root_url = "https://docs.rs/portcullis-core/0.1.0")]
 
 pub mod jsonrpc;
+pub mod mcp;
 
 pub use jsonrpc::{
     ErrorObject, Message, Notification, Request, RequestId, Response, ResponsePayload, error_code,
+};
+pub use mcp::{
+    CallToolParams, CallToolResult, Content, InitializeParams, InitializeResult, ListToolsResult,
+    Tool, ToolAnnotations, method,
 };
 
 /// The MCP revision portcullis is built against.
