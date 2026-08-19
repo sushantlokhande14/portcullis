@@ -15,3 +15,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # dtolnay/rust-toolchain is referenced by a *version tag* in the MSRV
+      # job (`@1.85.0`), which dependabot reads as an action version and tries
+      # to bump. Accepting that would silently raise the MSRV floor, which is
+      # the one thing that job exists to hold, so the ref is pinned by hand.
+      - dependency-name: dtolnay/rust-toolchain
