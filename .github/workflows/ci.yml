@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A push that supersedes an in-flight run cancels it. Contributors iterating on
+# a branch should not queue behind their own earlier commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Backtraces on a CI failure cost nothing and save a round trip.
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: fmt, clippy, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # missing_docs is a warning locally so it does not interrupt work in
+      # progress. Here it is an error, which is the point at which it matters.
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is not incidental. The transport tolerates CRLF and the
+        # gateway spawns child processes, and both behave differently there.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      # Build only. The MSRV promise is that the crates compile, not that the
+      # test harness and dev-dependencies do.
+      - run: cargo build --workspace --all-features
+
+  policy:
+    name: policy validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The shipped policy is the one people copy. --strict makes a warning a
+      # build failure, so it cannot pick up an unreachable rule unnoticed.
+      - name: Shipped policy is warning-free
+        run: cargo run -q -p portcullis-cli -- validate --strict policies/default.toml
+
+      # A regression here means the gateway would forward something the
+      # example policy is documented as refusing. `explain` exits non-zero on a
+      # denial, so the failing exit IS the assertion: a zero exit means the call
+      # was allowed and the step must fail.
+      - name: Shipped policy still refuses a shell call
+        run: |
+          if cargo run -q -p portcullis-cli -- explain --policy policies/default.toml --tool shell__run --args '{"cmd":"rm -rf /"}' > explain.txt
+          then
+            echo "::error::shell__run was allowed; the shipped policy must deny it"
+            cat explain.txt
+            exit 1
+          fi
+          grep -q 'deny-shell' explain.txt
+
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

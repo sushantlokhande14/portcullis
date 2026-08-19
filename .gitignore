@@ -12,3 +12,4 @@ Cargo.lock.orig
 .vscode/
 .DS_Store
 Thumbs.db
+/explain.txt
