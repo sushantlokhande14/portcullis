@@ -29,7 +29,7 @@ default = "deny"
 [[rule]]
 id = "deny-credential-paths"
 description = "Never read or write the directories that hold long-lived credentials"
-tools = ["fs.*"]
+tools = ["fs__*"]
 action = "deny"
 when = [
   { arg = "path", matches = "(^|/)\\.(ssh|aws|gnupg|kube|docker|config/gcloud)(/|$)" },
@@ -38,7 +38,7 @@ when = [
 [[rule]]
 id = "deny-dotenv-files"
 description = "Environment files are the single most common place a secret leaks from"
-tools = ["fs.*"]
+tools = ["fs__*"]
 action = "deny"
 when = [
   { arg = "path", matches = "(^|/)\\.env(\\.|$)" },
@@ -47,7 +47,7 @@ when = [
 [[rule]]
 id = "deny-path-traversal"
 description = "Reject relative escapes rather than trying to normalise them here"
-tools = ["fs.*"]
+tools = ["fs__*"]
 action = "deny"
 when = [
   { arg = "path", contains = ".." },
@@ -60,13 +60,13 @@ when = [
 [[rule]]
 id = "allow-filesystem-reads"
 description = "Reads are permitted anywhere the deny rules above have not excluded"
-tools = ["fs.read_*", "fs.list_*", "fs.search_*", "fs.get_*"]
+tools = ["fs__read_*", "fs__list_*", "fs__search_*", "fs__get_*"]
 action = "allow"
 
 [[rule]]
 id = "deny-recursive-delete"
 description = "A recursive delete is the one filesystem call with no safe misfire"
-tools = ["fs.delete*", "fs.remove*", "fs.rm*"]
+tools = ["fs__delete*", "fs__remove*", "fs__rm*"]
 action = "deny"
 when = [
   { arg = "recursive", equals = true },
@@ -75,7 +75,7 @@ when = [
 [[rule]]
 id = "allow-workspace-writes"
 description = "Writes are confined to the working tree"
-tools = ["fs.write_*", "fs.edit_*", "fs.create_*", "fs.move_*"]
+tools = ["fs__write_*", "fs__edit_*", "fs__create_*", "fs__move_*"]
 action = "allow"
 when = [
   { arg = "path", exists = true },
@@ -93,32 +93,32 @@ when = [
 [[rule]]
 id = "allow-github-reads"
 description = "Issue, PR, and repository reads"
-tools = ["gh.list_*", "gh.get_*", "gh.search_*", "gh.read_*"]
+tools = ["gh__list_*", "gh__get_*", "gh__search_*", "gh__read_*"]
 action = "allow"
 
 [[rule]]
 id = "deny-github-permission-changes"
 description = "Collaborators, deploy keys, secrets, and webhooks are never agent business"
 tools = [
-  "gh.add_collaborator",
-  "gh.update_*_permission*",
-  "gh.create_deploy_key",
-  "gh.set_secret",
-  "gh.create_webhook",
-  "gh.update_branch_protection",
+  "gh__add_collaborator",
+  "gh__update_*_permission*",
+  "gh__create_deploy_key",
+  "gh__set_secret",
+  "gh__create_webhook",
+  "gh__update_branch_protection",
 ]
 action = "deny"
 
 [[rule]]
 id = "deny-github-merge-and-release"
 description = "Publishing is a human decision"
-tools = ["gh.merge_*", "gh.create_release", "gh.publish_*", "gh.delete_*"]
+tools = ["gh__merge_*", "gh__create_release", "gh__publish_*", "gh__delete_*"]
 action = "deny"
 
 [[rule]]
 id = "allow-github-drafting"
 description = "Opening issues and PRs is reversible and useful"
-tools = ["gh.create_issue", "gh.create_pull_request", "gh.comment_*", "gh.update_issue"]
+tools = ["gh__create_issue", "gh__create_pull_request", "gh__comment_*", "gh__update_issue"]
 action = "allow"
 
 # ---------------------------------------------------------------------------
@@ -133,5 +133,5 @@ action = "allow"
 [[rule]]
 id = "deny-shell"
 description = "Arbitrary command execution defeats every other rule in this file"
-tools = ["shell.*", "bash.*", "exec.*", "process.*", "terminal.*"]
+tools = ["shell__*", "bash__*", "exec__*", "process__*", "terminal__*"]
 action = "deny"
