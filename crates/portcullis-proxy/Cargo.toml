@@ -12,6 +12,7 @@ authors.workspace = true
 portcullis-core.workspace = true
 portcullis-policy.workspace = true
 portcullis-scan.workspace = true
+sha2.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
