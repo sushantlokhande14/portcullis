@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sushantlokhande14/portcullis"
+homepage = "https://github.com/sushantlokhande14/portcullis"
+authors = ["Sushant Lokhande <sushantlokhande094@gmail.com>"]
+keywords = ["mcp", "model-context-protocol", "security", "policy", "proxy"]
+categories = ["command-line-utilities", "network-programming"]
+
+[workspace.dependencies]
+portcullis-core = { path = "crates/portcullis-core", version = "0.1.0" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+# Lints applied to every crate in the workspace. Individual crates opt in with
+# `[lints] workspace = true`, which keeps the policy in exactly one place.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Noisy in a workspace whose crates are named after their domain.
+module_name_repetitions = "allow"
+# We document errors where the caller has a real choice to make, not everywhere.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Runtime output
+*.audit.jsonl
+/audit/
+/.portcullis/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
