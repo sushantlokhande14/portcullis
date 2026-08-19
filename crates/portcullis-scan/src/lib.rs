@@ -12,6 +12,8 @@
 
 #![doc(html_root_url = "https://docs.rs/portcullis-scan/0.1.0")]
 
+pub mod injection;
 pub mod secret;
 
+pub use injection::{InjectionFinding, InjectionKind, Severity};
 pub use secret::{SecretFinding, SecretKind};
