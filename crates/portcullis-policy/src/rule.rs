@@ -24,6 +24,7 @@
 
 use crate::argpath::ArgPath;
 use crate::glob::Pattern;
+use crate::limit::RateLimit;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
@@ -316,6 +317,13 @@ pub struct Rule {
     pub action: Action,
     /// Conditions that must all hold for the rule to apply.
     pub when: Vec<Condition>,
+    /// How often this rule may allow a call.
+    ///
+    /// Only meaningful on an `allow` rule: a deny rule already refuses every
+    /// call, so limiting it would describe a rate of something that never
+    /// happens. Validation reports the combination rather than silently
+    /// ignoring it.
+    pub rate_limit: Option<RateLimit>,
 }
 
 /// The `[[rule]]` table as it appears in a policy file.
@@ -330,6 +338,7 @@ struct RawRule {
     action: Action,
     #[serde(default)]
     when: Vec<Condition>,
+    rate_limit: Option<RateLimit>,
 }
 
 impl TryFrom<RawRule> for Rule {
@@ -349,6 +358,7 @@ impl TryFrom<RawRule> for Rule {
             servers: raw.servers,
             action: raw.action,
             when: raw.when,
+            rate_limit: raw.rate_limit,
         })
     }
 }

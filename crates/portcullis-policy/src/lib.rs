@@ -29,6 +29,7 @@
 pub mod argpath;
 pub mod engine;
 pub mod glob;
+pub mod limit;
 pub mod load;
 pub mod rule;
 
@@ -37,5 +38,6 @@ pub use engine::{
     CallContext, Decision, DecisionSource, Explanation, Policy, RuleTrace, TraceOutcome,
 };
 pub use glob::Pattern;
+pub use limit::{RateLimit, RateLimitError};
 pub use load::{Diagnostic, LoadError, Severity};
 pub use rule::{Action, Condition, Predicate, Rule, RuleError};

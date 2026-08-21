@@ -25,6 +25,7 @@
 //! gap, and it is one of the better places to contribute.
 
 use crate::inspect::{Inspection, InspectionConfig, inspect};
+use crate::ratelimit::{LimitScope, RateLimiter, Verdict};
 use crate::registry::ToolRegistry;
 use crate::upstream::{Upstream, UpstreamConfig, UpstreamError};
 use portcullis_core::mcp::{
@@ -34,7 +35,7 @@ use portcullis_core::mcp::{
 use portcullis_core::{
     ErrorObject, Message, MessageReader, MessageWriter, Request, Response, error_code, method,
 };
-use portcullis_policy::{CallContext, Decision, Policy};
+use portcullis_policy::{CallContext, Decision, DecisionSource, Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -84,6 +85,10 @@ pub struct Gateway {
     registry: ToolRegistry,
     policy: Policy,
     inspection: InspectionConfig,
+    /// Buckets for this session, keyed by the id of the rule that allowed the
+    /// call. Behind a std Mutex because the check is a few arithmetic
+    /// operations and is never held across an await.
+    limiter: std::sync::Mutex<RateLimiter>,
     server_info: Implementation,
 }
 
@@ -128,6 +133,11 @@ impl Gateway {
             upstreams.insert(server.name.clone(), Arc::new(upstream));
         }
 
+        let limiter = RateLimiter::from_policy(&policy);
+        if !limiter.is_empty() {
+            tracing::info!("rate limits are in force for this session");
+        }
+
         for skipped in registry.skipped() {
             tracing::warn!(
                 upstream = %skipped.server,
@@ -142,6 +152,7 @@ impl Gateway {
             registry,
             policy,
             inspection: config.inspection.clone(),
+            limiter: std::sync::Mutex::new(limiter),
             server_info: Implementation::new("portcullis", env!("CARGO_PKG_VERSION")),
         })
     }
@@ -252,28 +263,9 @@ impl Gateway {
     }
 
     async fn handle_tools_call(&self, request: &Request) -> Response {
-        let params: CallToolParams = match request
-            .params
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()
-        {
-            Ok(Some(params)) => params,
-            Ok(None) => {
-                return Response::error(
-                    request.id.clone(),
-                    ErrorObject::new(error_code::INVALID_PARAMS, "tools/call requires params"),
-                );
-            }
-            Err(error) => {
-                return Response::error(
-                    request.id.clone(),
-                    ErrorObject::new(
-                        error_code::INVALID_PARAMS,
-                        format!("unusable tools/call params: {error}"),
-                    ),
-                );
-            }
+        let params = match parse_call_params(request) {
+            Ok(params) => params,
+            Err(error) => return Response::error(request.id.clone(), error),
         };
 
         let Some(route) = self.registry.route(&params.name) else {
@@ -300,6 +292,21 @@ impl Gateway {
                 "denied"
             );
             return Response::success(request.id.clone(), denial_result(&params.name, &decision));
+        }
+
+        // Policy said yes; the limiter decides whether it may say yes again.
+        // The lock is taken and dropped here, never held across the await below.
+        if let Verdict::Limited { retry_after, scope } = self.check_rate_limit(&decision) {
+            tracing::info!(
+                tool = %params.name,
+                rule = decision.rule_id().unwrap_or("<default>"),
+                retry_after_s = retry_after.as_secs(),
+                "rate limited"
+            );
+            return Response::success(
+                request.id.clone(),
+                rate_limited_result(&params.name, &decision, retry_after, scope),
+            );
         }
 
         let Some(upstream) = self.upstreams.get(&route.server) else {
@@ -356,6 +363,29 @@ impl Gateway {
         }
     }
 
+    /// Charges a token against the deciding rule's bucket and the session's.
+    ///
+    /// A call allowed by the policy default has no rule to charge, so only the
+    /// session limit applies to it. That is the right reading: the default is
+    /// not a rule an operator wrote a limit on.
+    fn check_rate_limit(&self, decision: &Decision) -> Verdict {
+        let key = match &decision.source {
+            DecisionSource::Rule { id, .. } => id.as_str(),
+            DecisionSource::Default => "",
+        };
+
+        match self.limiter.lock() {
+            Ok(mut limiter) => limiter.check(key),
+            // A poisoned lock means another task panicked mid-check. Failing
+            // closed here would take the whole session down over one bucket, so
+            // the call proceeds and the poisoning is recorded.
+            Err(poisoned) => {
+                tracing::error!("rate limiter lock was poisoned; allowing the call");
+                poisoned.into_inner().check(key)
+            }
+        }
+    }
+
     /// Runs the scanners over an upstream result.
     ///
     /// A result that will not deserialise into a `CallToolResult` is returned
@@ -395,6 +425,26 @@ impl Gateway {
     }
 }
 
+/// Parses `tools/call` parameters, or produces the error to return.
+///
+/// Split out of the handler so the enforcement path reads as a sequence of
+/// decisions rather than being prefixed by twenty lines of deserialisation.
+fn parse_call_params(request: &Request) -> Result<CallToolParams, ErrorObject> {
+    let Some(raw) = request.params.clone() else {
+        return Err(ErrorObject::new(
+            error_code::INVALID_PARAMS,
+            "tools/call requires params",
+        ));
+    };
+
+    serde_json::from_value(raw).map_err(|error| {
+        ErrorObject::new(
+            error_code::INVALID_PARAMS,
+            format!("unusable tools/call params: {error}"),
+        )
+    })
+}
+
 /// Builds the `isError` result that a denied call returns.
 fn denial_result(tool: &str, decision: &Decision) -> Value {
     let mut result = CallToolResult::error(format!(
@@ -417,6 +467,51 @@ fn denial_result(tool: &str, decision: &Decision) -> Value {
     serde_json::to_value(result).expect("denial result serialises")
 }
 
+/// Builds the `isError` result that a rate-limited call returns.
+///
+/// Distinct wording from a policy denial on purpose. A denial is permanent and
+/// the agent should choose another approach; a rate limit is temporary and
+/// retrying later is exactly the right response, so the message says which one
+/// this is and how long to wait.
+fn rate_limited_result(
+    tool: &str,
+    decision: &Decision,
+    retry_after: std::time::Duration,
+    scope: LimitScope,
+) -> Value {
+    let seconds = retry_after.as_secs().max(1);
+
+    // Named from the bucket that actually ran out, not from whether a rule
+    // decided the call. A call a rule allowed can still be stopped by the
+    // session limit, and pointing the operator at the rule's line would send
+    // them hunting for a limit that is not the binding one.
+    let scope_text = match (scope, decision.rule_id()) {
+        (LimitScope::Session, _) => "the session rate limit".to_owned(),
+        (LimitScope::Rule, Some(rule)) => format!("the rate limit on policy rule {rule:?}"),
+        (LimitScope::Rule, None) => "a rate limit".to_owned(),
+    };
+
+    let mut result = CallToolResult::error(format!(
+        "portcullis rate limited {tool}: {scope_text} is exhausted. This is temporary, unlike a policy          denial; retry in about {seconds}s."
+    ));
+
+    result.extra.insert(
+        "_portcullis".to_owned(),
+        json!({
+            "decision": "rate_limited",
+            "scope": match scope {
+                LimitScope::Session => "session",
+                LimitScope::Rule => "rule",
+            },
+            "rule": decision.rule_id(),
+            "tool": tool,
+            "retry_after_seconds": seconds,
+        }),
+    );
+
+    serde_json::to_value(result).expect("rate limit result serialises")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +520,7 @@ mod tests {
 
     fn gateway(policy_text: &str, tools: &[&str]) -> Gateway {
         let (policy, _) = portcullis_policy::load::from_str(policy_text).expect("policy loads");
+        let policy_for_limiter = policy.clone();
         let mut registry = ToolRegistry::new();
         registry.register("fs", tools.iter().map(|n| Tool::new(*n)).collect());
 
@@ -433,6 +529,7 @@ mod tests {
             registry,
             policy,
             inspection: InspectionConfig::default(),
+            limiter: std::sync::Mutex::new(RateLimiter::from_policy(&policy_for_limiter)),
             server_info: Implementation::new("portcullis", "0.1.0"),
         }
     }

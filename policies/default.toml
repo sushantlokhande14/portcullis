@@ -18,6 +18,12 @@
 version = 1
 default = "deny"
 
+# A ceiling on tool calls across the whole session, whichever rule allowed them.
+# Per-rule limits bound one rule's budget; this one catches an agent looping
+# across several permitted tools rather than hammering a single one. Generous on
+# purpose: it is a backstop against a runaway loop, not a throttle.
+session_rate_limit = { max = 500, per_seconds = 60 }
+
 # ---------------------------------------------------------------------------
 # Credential and secret material
 #
@@ -120,6 +126,9 @@ id = "allow-github-drafting"
 description = "Opening issues and PRs is reversible and useful"
 tools = ["gh__create_issue", "gh__create_pull_request", "gh__comment_*", "gh__update_issue"]
 action = "allow"
+# Reversible is not the same as harmless in bulk: this is also the shape of a
+# spam run. The budget belongs to the rule, so all four tools share it.
+rate_limit = { max = 10, per_seconds = 300 }
 
 # ---------------------------------------------------------------------------
 # Shell

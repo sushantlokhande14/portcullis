@@ -60,8 +60,6 @@ These are real and tracked, not hidden:
   content in the model's context that no policy inspected.
 - **Upstream `tools/list_changed` notifications are not forwarded**, which is
   why the handshake advertises `listChanged: false`.
-- **Rate limits are not yet expressible in policy files.** The limiter exists
-  and is tested; wiring it to a `rate_limit` key on a rule is open work.
 - **OpenTelemetry export.** Spans use `tracing` with GenAI-convention field
   names, but there is no OTLP exporter yet.
 - **Non-text content is uninspected.**

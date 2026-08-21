@@ -100,6 +100,40 @@ Dotted, with `*` as a wildcard segment.
 | `files.*.path` | every element's `path` |
 | `` (empty) | the whole arguments object |
 
+## Rate limits
+
+A limit may be written on an `allow` rule, and one may be written for the whole
+session:
+
+```toml
+session_rate_limit = { max = 500, per_seconds = 60 }
+
+[[rule]]
+id = "allow-github-drafting"
+tools = ["gh__create_issue", "gh__comment_*"]
+action = "allow"
+rate_limit = { max = 10, per_seconds = 300 }
+```
+
+`max` is both the ceiling and the burst allowance: ten calls immediately, then
+one every thirty seconds as the bucket refills. Refill is continuous rather than
+per-window, so twice the limit cannot land across a window boundary.
+
+**The budget belongs to the rule, not the tool.** The example above grants ten
+calls per five minutes across all four tools together. For a separate budget per
+tool, write a narrower rule, which also makes the intent readable.
+
+A limited call is refused with a message that says it is *temporary*, unlike a
+policy denial, and gives a retry-after. The message names whichever budget
+actually ran out, so a call a rule allowed but the session limit stopped points
+at the session limit rather than at the rule.
+
+A limit on a `deny` rule is inert, since a deny rule refuses every call anyway.
+That is a `rate-limit-on-deny` warning rather than an error. A `max` or
+`per_seconds` of zero is a load error: writing `max = 0` to mean "never" is
+indistinguishable at runtime from a bucket that has not refilled, so use
+`action = "deny"`, where the refusal names the rule.
+
 ## The two things that bite
 
 ### An absent argument makes a condition false
@@ -161,5 +195,6 @@ warning.
 | `unreachable-rule` | warning | an earlier rule already covers this one |
 | `vacuous-negation` | warning | a negated condition with no companion presence check |
 | `default-allow` | warning | the default forwards anything unmatched |
+| `rate-limit-on-deny` | warning | a limit on a rule that refuses every call, so the limit is inert |
 
 `validate --strict` exits non-zero on warnings, for use in CI.

@@ -17,6 +17,12 @@
 //! Capacity doubles as the burst allowance: a bucket of 10 refilling at 10 per
 //! minute permits a burst of 10 and then one call every six seconds.
 //!
+//! # The limit value lives in portcullis-policy
+//!
+//! [`RateLimit`] is defined there, not here, because a policy rule carries one
+//! and `portcullis-policy` must not depend on the proxy. This module owns the
+//! buckets and the clock; the policy crate owns the configured numbers.
+//!
 //! # Monotonic time only
 //!
 //! Refill is computed from [`Instant`], never from wall clock. A clock stepped
@@ -25,35 +31,23 @@
 //! free capacity. Neither is a good failure mode for a control that exists to
 //! bound damage.
 
-use serde::{Deserialize, Serialize};
+// Re-exported so `crate::ratelimit::RateLimit` still resolves for callers,
+// even though the type is defined in portcullis-policy.
+pub use portcullis_policy::RateLimit;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// A rate limit as written in configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RateLimit {
-    /// Maximum calls in a full bucket, which is also the burst allowance.
-    pub max: u32,
-    /// Seconds over which a full bucket refills.
-    pub per_seconds: u64,
-}
-
-impl RateLimit {
-    /// Builds a limit.
-    pub fn new(max: u32, per_seconds: u64) -> Self {
-        Self { max, per_seconds }
-    }
-
-    /// Tokens restored per second.
-    fn refill_rate(self) -> f64 {
-        if self.per_seconds == 0 {
-            return f64::INFINITY;
-        }
-        #[expect(clippy::cast_precision_loss, reason = "limits are small integers")]
-        let rate = f64::from(self.max) / self.per_seconds as f64;
-        rate
-    }
+/// Which budget ran out.
+///
+/// Carried so the message shown to the model can name the right one. Reporting
+/// a session limit as a rule limit sends an operator to the wrong line of the
+/// policy file, which is worse than saying nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitScope {
+    /// The limit written on the rule that allowed the call.
+    Rule,
+    /// The session-wide limit.
+    Session,
 }
 
 /// The outcome of asking to spend a token.
@@ -65,6 +59,8 @@ pub enum Verdict {
     Limited {
         /// How long until one token is available.
         retry_after: Duration,
+        /// Which budget was exhausted.
+        scope: LimitScope,
     },
 }
 
@@ -91,7 +87,11 @@ impl Bucket {
         }
     }
 
-    fn try_spend(&mut self, now: Instant) -> Verdict {
+    /// Charges one token, refilling first.
+    ///
+    /// Only called after [`RateLimiter::check_at`] has confirmed every bucket
+    /// has capacity, so there is nothing to report back.
+    fn spend(&mut self, now: Instant) {
         // saturating_duration_since, not `-`: Instant subtraction panics if the
         // arguments are ever ordered unexpectedly, and a limiter is a poor
         // place to introduce a panic.
@@ -102,27 +102,28 @@ impl Bucket {
             (self.tokens + elapsed * self.limit.refill_rate()).min(f64::from(self.limit.max));
         self.last_refill = now;
 
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            return Verdict::Allowed;
-        }
-
-        let rate = self.limit.refill_rate();
-        let seconds = if rate > 0.0 {
-            (1.0 - self.tokens) / rate
-        } else {
-            f64::MAX
-        };
-        Verdict::Limited {
-            retry_after: Duration::from_secs_f64(seconds.min(86_400.0)),
-        }
+        debug_assert!(
+            self.tokens >= 1.0,
+            "spend called on a bucket with no capacity"
+        );
+        self.tokens -= 1.0;
     }
 }
 
 /// Buckets for one session.
 ///
-/// Keyed by published tool name. A per-session global limit can be added by
-/// registering a limit under [`GLOBAL_KEY`], which every call also checks.
+/// Keyed by **rule id**, not by tool name. The budget belongs to the rule that
+/// allowed the call, so a rule covering `gh__*` with a limit of five per minute
+/// grants five calls per minute across all of those tools together. Wanting a
+/// separate budget per tool means writing a narrower rule, which is also the
+/// change that makes the intent readable in the policy file.
+///
+/// Keying by tool name instead would have meant deciding what a limit on a rule
+/// covering forty tools even means, and any answer to that is a surprise to
+/// somebody. A limit that belongs to the thing it is written on is not.
+///
+/// A session-wide limit is registered under [`GLOBAL_KEY`] and is checked by
+/// every call regardless of which rule allowed it.
 #[derive(Debug, Default)]
 pub struct RateLimiter {
     buckets: HashMap<String, Bucket>,
@@ -138,9 +139,33 @@ impl RateLimiter {
         Self::default()
     }
 
-    /// Registers a limit for a published tool name, or for [`GLOBAL_KEY`].
+    /// Registers a limit for a rule id, or for [`GLOBAL_KEY`].
     pub fn set(&mut self, key: impl Into<String>, limit: RateLimit) {
         self.limits.insert(key.into(), limit);
+    }
+
+    /// Builds a limiter from every limit a policy declares.
+    ///
+    /// Limits on `deny` rules are skipped: a deny rule refuses every call, so a
+    /// rate on it describes how often something that never happens may happen.
+    /// Policy validation warns about the combination, so this only has to avoid
+    /// acting on it.
+    pub fn from_policy(policy: &portcullis_policy::Policy) -> Self {
+        let mut limiter = Self::new();
+
+        for rule in policy.rules() {
+            if let Some(limit) = rule.rate_limit {
+                if rule.action.is_allow() {
+                    limiter.set(rule.id.clone(), limit);
+                }
+            }
+        }
+
+        if let Some(limit) = policy.session_rate_limit() {
+            limiter.set(GLOBAL_KEY, limit);
+        }
+
+        limiter
     }
 
     /// Whether any limits are configured.
@@ -148,20 +173,20 @@ impl RateLimiter {
         self.limits.is_empty()
     }
 
-    /// Spends a token for a call, checking the tool limit and the global one.
+    /// Spends a token for a call, checking the rule's limit and the session's.
     ///
     /// Both are charged only when both would allow the call. Charging the
     /// global bucket and then refusing on the tool bucket would consume session
     /// budget for a call that never happened, so a caller retrying a limited
     /// tool would slowly starve every other tool.
-    pub fn check(&mut self, tool: &str) -> Verdict {
-        self.check_at(tool, Instant::now())
+    pub fn check(&mut self, key: &str) -> Verdict {
+        self.check_at(key, Instant::now())
     }
 
-    fn check_at(&mut self, tool: &str, now: Instant) -> Verdict {
+    fn check_at(&mut self, key: &str, now: Instant) -> Verdict {
         let mut keys: Vec<&str> = Vec::with_capacity(2);
-        if self.limits.contains_key(tool) {
-            keys.push(tool);
+        if self.limits.contains_key(key) {
+            keys.push(key);
         }
         if self.limits.contains_key(GLOBAL_KEY) {
             keys.push(GLOBAL_KEY);
@@ -170,8 +195,9 @@ impl RateLimiter {
             return Verdict::Allowed;
         }
 
-        // Probe every bucket before spending from any of them.
-        let mut worst: Option<Duration> = None;
+        // Probe every bucket before spending from any of them, tracking which
+        // one is the binding constraint so the caller can name it.
+        let mut worst: Option<(Duration, LimitScope)> = None;
         for key in &keys {
             let limit = self.limits[*key];
             let bucket = self
@@ -185,24 +211,29 @@ impl RateLimiter {
                 (bucket.tokens + elapsed * limit.refill_rate()).min(f64::from(limit.max));
 
             if available < 1.0 {
-                let rate = limit.refill_rate();
-                let seconds = if rate > 0.0 {
-                    (1.0 - available) / rate
-                } else {
-                    f64::MAX
-                };
+                let seconds = (1.0 - available) / limit.refill_rate();
                 let retry = Duration::from_secs_f64(seconds.min(86_400.0));
-                worst = Some(worst.map_or(retry, |current: Duration| current.max(retry)));
+                let scope = if *key == GLOBAL_KEY {
+                    LimitScope::Session
+                } else {
+                    LimitScope::Rule
+                };
+
+                // The longest wait governs, since both must have capacity.
+                worst = match worst {
+                    Some((current, _)) if current >= retry => worst,
+                    _ => Some((retry, scope)),
+                };
             }
         }
 
-        if let Some(retry_after) = worst {
-            return Verdict::Limited { retry_after };
+        if let Some((retry_after, scope)) = worst {
+            return Verdict::Limited { retry_after, scope };
         }
 
         for key in keys {
             if let Some(bucket) = self.buckets.get_mut(key) {
-                bucket.try_spend(now);
+                bucket.spend(now);
             }
         }
         Verdict::Allowed
@@ -243,7 +274,7 @@ mod tests {
 
         let verdict = limiter.check("gh__create_issue");
         assert!(!verdict.is_allowed());
-        let Verdict::Limited { retry_after } = verdict else {
+        let Verdict::Limited { retry_after, .. } = verdict else {
             panic!()
         };
         assert!(
@@ -334,7 +365,7 @@ mod tests {
         ]);
 
         assert!(limiter.check_at("t", start).is_allowed());
-        let Verdict::Limited { retry_after } = limiter.check_at("t", start) else {
+        let Verdict::Limited { retry_after, .. } = limiter.check_at("t", start) else {
             panic!("should be limited")
         };
         assert!(

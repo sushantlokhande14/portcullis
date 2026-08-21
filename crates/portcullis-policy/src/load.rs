@@ -194,6 +194,7 @@ pub fn validate(policy: &Policy) -> Vec<Diagnostic> {
 
     for (index, rule) in rules.iter().enumerate() {
         check_negation_without_presence(rule, &mut diagnostics);
+        check_rate_limit_on_deny(rule, &mut diagnostics);
 
         if let Some(shadow) = rules[..index].iter().find(|earlier| shadows(earlier, rule)) {
             diagnostics.push(Diagnostic {
@@ -210,6 +211,18 @@ pub fn validate(policy: &Policy) -> Vec<Diagnostic> {
     }
 
     diagnostics
+}
+
+fn check_rate_limit_on_deny(rule: &Rule, diagnostics: &mut Vec<Diagnostic>) {
+    if rule.rate_limit.is_some() && !rule.action.is_allow() {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            code: "rate-limit-on-deny",
+            rule_id: Some(rule.id.clone()),
+            message: "has a rate limit but denies every call, so the limit describes how often                       something that never happens may happen. The limit is ignored"
+                .to_owned(),
+        });
+    }
 }
 
 fn check_duplicate_ids(rules: &[Rule], diagnostics: &mut Vec<Diagnostic>) {
@@ -504,6 +517,60 @@ mod tests {
         .expect("loads");
 
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_rate_limit_on_an_allow_rule_loads_cleanly() {
+        let (policy, warnings) = load(
+            r#"
+            session_rate_limit = { max = 200, per_seconds = 60 }
+
+            [[rule]]
+            id = "allow-drafting"
+            tools = ["gh__create_issue"]
+            action = "allow"
+            rate_limit = { max = 5, per_seconds = 60 }
+            "#,
+        )
+        .expect("loads");
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(policy.rules()[0].rate_limit.unwrap().max, 5);
+        assert_eq!(policy.session_rate_limit().unwrap().max, 200);
+    }
+
+    #[test]
+    fn a_rate_limit_on_a_deny_rule_warns() {
+        // Not an error: the policy still does what it says, the limit is just
+        // inert. Saying so beats silently ignoring it.
+        let (_, warnings) = load(
+            r#"
+            [[rule]]
+            id = "deny-shell"
+            tools = ["shell__*"]
+            action = "deny"
+            rate_limit = { max = 5, per_seconds = 60 }
+            "#,
+        )
+        .expect("loads");
+
+        assert_eq!(codes(&warnings), vec!["rate-limit-on-deny"]);
+    }
+
+    #[test]
+    fn a_degenerate_rate_limit_fails_the_load() {
+        let error = load(
+            r#"
+            [[rule]]
+            id = "r"
+            tools = ["*"]
+            action = "allow"
+            rate_limit = { max = 0, per_seconds = 60 }
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("max = 0"), "{error}");
     }
 
     #[test]

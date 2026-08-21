@@ -321,6 +321,109 @@ async fn the_shipped_policy_denies_a_shell_tool_end_to_end() {
 }
 
 #[tokio::test]
+async fn a_rate_limited_rule_stops_forwarding_after_its_budget_is_spent() {
+    // MOCK_REPLY is the proof again: the fourth call must not carry it, which
+    // means it never reached the upstream.
+    let policy = r#"
+        default = "deny"
+        [[rule]]
+        id = "allow-echo"
+        tools = ["*__echo"]
+        action = "allow"
+        rate_limit = { max = 3, per_seconds = 3600 }
+    "#;
+    let gateway = gateway(
+        policy,
+        vec![upstream("mock", &[("MOCK_REPLY", "UPSTREAM RAN")])],
+    )
+    .await;
+
+    for n in 0..3 {
+        let result = call(&gateway, "mock__echo", json!({})).await;
+        assert!(!result.failed(), "call {n} should be within budget");
+        assert!(
+            result.content[0]
+                .as_text()
+                .unwrap()
+                .contains("UPSTREAM RAN")
+        );
+    }
+
+    let limited = call(&gateway, "mock__echo", json!({})).await;
+    assert!(limited.failed());
+    let text = limited.content[0].as_text().unwrap();
+    assert!(
+        !text.contains("UPSTREAM RAN"),
+        "the call was forwarded anyway: {text}"
+    );
+    assert!(text.contains("rate limited"), "{text}");
+    assert!(
+        text.contains("temporary"),
+        "a limit must read differently from a denial: {text}"
+    );
+    assert_eq!(
+        limited.extra["_portcullis"]["decision"],
+        json!("rate_limited")
+    );
+    assert_eq!(limited.extra["_portcullis"]["rule"], json!("allow-echo"));
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_session_limit_applies_across_rules_and_upstreams() {
+    let policy = r#"
+        default = "deny"
+        session_rate_limit = { max = 2, per_seconds = 3600 }
+
+        [[rule]]
+        id = "allow-alpha"
+        servers = ["alpha"]
+        tools = ["*"]
+        action = "allow"
+
+        [[rule]]
+        id = "allow-beta"
+        servers = ["beta"]
+        tools = ["*"]
+        action = "allow"
+    "#;
+    let gateway = gateway(policy, vec![upstream("alpha", &[]), upstream("beta", &[])]).await;
+
+    // Two calls, deliberately through different rules and different upstreams.
+    assert!(!call(&gateway, "alpha__echo", json!({})).await.failed());
+    assert!(!call(&gateway, "beta__echo", json!({})).await.failed());
+
+    let limited = call(&gateway, "alpha__echo", json!({})).await;
+    assert!(
+        limited.failed(),
+        "the session budget is shared across rules"
+    );
+    assert!(
+        limited.content[0]
+            .as_text()
+            .unwrap()
+            .contains("session rate limit")
+    );
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unlimited_rule_is_never_throttled() {
+    let gateway = gateway(ALLOW_ECHO, vec![upstream("mock", &[])]).await;
+
+    for n in 0..25 {
+        assert!(
+            !call(&gateway, "mock__echo", json!({})).await.failed(),
+            "call {n}"
+        );
+    }
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_unknown_tool_is_reported_without_touching_any_upstream() {
     let gateway = gateway(ALLOW_ECHO, vec![upstream("mock", &[])]).await;
 

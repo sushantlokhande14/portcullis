@@ -20,6 +20,7 @@
 //! crafted to dodge every deny rule reaches the default, so `deny` there is
 //! what makes the language safe rather than merely expressive.
 
+use crate::limit::RateLimit;
 use crate::rule::{Action, Rule};
 use serde::Deserialize;
 use serde_json::Value;
@@ -157,6 +158,14 @@ pub struct Policy {
     /// The rules, in evaluation order.
     #[serde(default, rename = "rule")]
     rules: Vec<Rule>,
+    /// A ceiling on tool calls across the whole session, whichever rule allowed
+    /// them.
+    ///
+    /// A per-rule limit bounds one tool. This bounds the session, which is what
+    /// catches an agent looping across several permitted tools rather than
+    /// hammering one.
+    #[serde(default)]
+    session_rate_limit: Option<RateLimit>,
 }
 
 fn default_action() -> Action {
@@ -172,6 +181,7 @@ impl Default for Policy {
         Self {
             default_action: Action::Deny,
             rules: Vec::new(),
+            session_rate_limit: None,
         }
     }
 }
@@ -182,7 +192,18 @@ impl Policy {
         Self {
             default_action,
             rules,
+            session_rate_limit: None,
         }
+    }
+
+    /// The session-wide limit, if the policy declares one.
+    pub fn session_rate_limit(&self) -> Option<RateLimit> {
+        self.session_rate_limit
+    }
+
+    /// The rule at a position, for a caller holding a [`DecisionSource::Rule`].
+    pub fn rule_at(&self, index: usize) -> Option<&Rule> {
+        self.rules.get(index)
     }
 
     /// The action taken when no rule matches.
