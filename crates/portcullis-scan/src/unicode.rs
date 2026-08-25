@@ -100,7 +100,7 @@ pub struct UnicodeFinding {
     pub span: Range<usize>,
     /// How many characters the run contains.
     pub count: usize,
-    /// For [`Category::TagBlock`], the ASCII the run encodes.
+    /// For [`Category::TagBlock`] and long [`Category::VariationSelector`] runs, the payload the run encodes.
     ///
     /// This is the payload an attacker hid. It is attacker-controlled text and
     /// must be treated as data, never as instruction, including by whatever
@@ -111,6 +111,9 @@ pub struct UnicodeFinding {
 
 /// Longest decoded payload kept in a finding.
 const DECODED_LIMIT: usize = 512;
+
+/// Min VS run length treated as a covert channel (emoji uses 1–2).
+const VARIATION_DECODE_THRESHOLD: usize = 3;
 
 /// Finds runs of invisible and direction-altering characters.
 ///
@@ -128,6 +131,10 @@ pub fn scan(text: &str) -> Vec<UnicodeFinding> {
                 *count += 1;
                 if found == Category::TagBlock && decoded.len() < DECODED_LIMIT {
                     decoded.push(decode_tag(ch));
+                } else if found == Category::VariationSelector && decoded.len() < DECODED_LIMIT {
+                    if let Some(c) = decode_variation(ch) {
+                        decoded.push(c);
+                    }
                 }
             }
             _ => {
@@ -138,6 +145,10 @@ pub fn scan(text: &str) -> Vec<UnicodeFinding> {
                     let mut decoded = String::new();
                     if found == Category::TagBlock {
                         decoded.push(decode_tag(ch));
+                    } else if found == Category::VariationSelector {
+                        if let Some(c) = decode_variation(ch) {
+                            decoded.push(c);
+                        }
                     }
                     open = Some((found, offset, 1, decoded));
                 }
@@ -159,15 +170,44 @@ fn finish(
     count: usize,
     decoded: String,
 ) -> UnicodeFinding {
+    let decoded = match category {
+        Category::TagBlock if !decoded.is_empty() => Some(decoded),
+        // Only treat long VS runs as stego; short runs are normal emoji selectors.
+        Category::VariationSelector
+            if count >= VARIATION_DECODE_THRESHOLD && !decoded.is_empty() =>
+        {
+            Some(decoded)
+        }
+        _ => None,
+    };
     UnicodeFinding {
         category,
         span: start..end,
         count,
-        decoded: (category == Category::TagBlock).then_some(decoded),
+        decoded,
     }
 }
 
 /// Maps a tag character back to the ASCII it stands for.
+fn decode_variation(ch: char) -> Option<char> {
+    let cp = ch as u32;
+    let byte = if (0xFE00..=0xFE0F).contains(&cp) {
+        (cp - 0xFE00) as u8
+    } else if (0xE0100..=0xE01EF).contains(&cp) {
+        let idx = cp - 0xE0100;
+        if idx > 0xFF {
+            return None;
+        }
+        idx as u8
+    } else {
+        return None;
+    };
+    // Prefer printable ASCII so hidden English text is readable in findings;
+    // non-printable bytes become '.'.
+    let c = char::from(byte);
+    Some(if c.is_ascii_graphic() || c == ' ' { c } else { '.' })
+}
+
 fn decode_tag(ch: char) -> char {
     let code = ch as u32 - 0xE_0000;
     char::from_u32(code).unwrap_or('\u{FFFD}')
@@ -278,7 +318,7 @@ mod tests {
         assert_eq!(findings[0].category, Category::ZeroWidth);
         assert!(
             findings[0].decoded.is_none(),
-            "only the tag block decodes to anything"
+            "short variation-selector runs must not decode (emoji-safe)"
         );
     }
 
@@ -377,5 +417,29 @@ mod tests {
             assert!(text.is_char_boundary(finding.span.end));
             assert_eq!(text[finding.span.clone()].chars().count(), finding.count);
         }
+    }
+
+    /// Build a variation-selector covert payload for fixtures (mirrors encode_tag_block).
+    fn encode_variation_payload(text: &str) -> String {
+        text.bytes()
+            .map(|b| char::from_u32(0xE0100 + u32::from(b)).expect("in VS plane"))
+            .collect()
+    }
+
+    #[test]
+    fn decodes_long_variation_selector_runs_but_not_short_emoji_ones() {
+        let hidden = "HIDE";
+        let payload = encode_variation_payload(hidden);
+        assert!(payload.chars().count() >= VARIATION_DECODE_THRESHOLD);
+        let findings = scan(&format!("ok{payload}"));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].category, Category::VariationSelector);
+        assert_eq!(findings[0].decoded.as_deref(), Some(hidden));
+
+        // Single VS after a letter is emoji-ish / noise — no decoded payload.
+        let short = format!("A{}", char::from_u32(0xFE0F).unwrap());
+        let findings = scan(&short);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].decoded.is_none());
     }
 }
